@@ -1,0 +1,19 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skabelonmotor-api
+    env_file:
+      - .env
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+    networks:
+      edge:
+        aliases:
+          - skabelonmotor-api
+
+networks:
+  edge:
+    external: true

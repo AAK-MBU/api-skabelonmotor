@@ -1,0 +1,55 @@
+[project]
+name = "api_skabelonmotor"
+version = "0.0.1"
+description = "API for skabelonmotor"
+authors = [
+    {name = "MBU", email = "dadj@aarhus.dk"}
+]
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+keywords = ["fastapi", "os2forms-api", "api"]
+
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "sqlmodel>=0.0.14",
+    "pydantic>=2.5.3",
+    "pydantic-settings>=2.1.0",
+    "sqlalchemy>=2.0.25",
+    "pyodbc>=5.0.1",
+    "python-dotenv>=1.0.0",
+    "python-multipart>=0.0.6",
+    "python-jose[cryptography]>=3.3.0",
+    "fastapi-pagination>=0.14.3",
+    "openpyxl >= 3.1.2",
+    "requests_ntlm >= 1.2.0",
+    "python-dateutil == 2.9.*",
+    "cryptography >= 43.0.0",
+    "office365-rest-python-client",
+    "Pillow == 11.0",
+    "portalocker",
+    "mbu-dev-shared-components >= 0.4.1",
+    "pandas",
+    "beautifulsoup4",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["app*"]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+]

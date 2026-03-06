@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: skabelonmotor-api
+    env_file:
+      - .env
+    ports:
+      - "8020:8020"
+    restart: unless-stopped
+    volumes:
+      - ./app:/app/app
+      - ./.env:/app/.env:ro
+    networks:
+      - skabelonmotor_api-network
+
+networks:
+  skabelonmotor_api-network:
+    driver: bridge
