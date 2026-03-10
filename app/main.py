@@ -1,11 +1,16 @@
+"""
+Main
+"""
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import condition_handler
+from app.api import letter_handler
 
 
 class UTF8JSONResponse(JSONResponse):
+    """Class docstring"""
     media_type = "application/json; charset=utf-8"
 
 
@@ -24,11 +29,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(condition_handler.router)
+app.include_router(letter_handler.router)
 
 
 @app.get("/")
 def root():
+    """Default endpoint"""
     return {"message": "Skabelonmotor is running"}
 
 

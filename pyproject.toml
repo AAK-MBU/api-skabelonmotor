@@ -8,7 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 license = {text = "MIT"}
-keywords = ["fastapi", "os2forms-api", "api"]
+keywords = ["fastapi", "skabelonmotor-api", "api"]
 
 dependencies = [
     "fastapi>=0.109.0",
@@ -32,6 +32,7 @@ dependencies = [
     "mbu-dev-shared-components >= 0.4.1",
     "pandas",
     "beautifulsoup4",
+    "reportlab",
 ]
 
 [project.optional-dependencies]
