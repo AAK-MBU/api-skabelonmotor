@@ -23,6 +23,8 @@ class LetterRequest(BaseModel):
 
     custom_key_overrides: dict[str, Any] | None = None
 
+    file_type: str = "pdf"
+
 
 @router.post("/create_text")
 def create_letter_text(request: LetterRequest):
@@ -34,16 +36,11 @@ def create_letter_text(request: LetterRequest):
     blocks = request.block_data
     overrides = request.custom_key_overrides or {}
 
+    file_type = request.file_type.lower()
+
     letter_parts = []
 
     for block in blocks:
-
-        print()
-        print()
-        print(block)
-        print()
-        print()
-
         block_id = block.get("block_id")
         mapping = block.get("mapping")
         condition = block.get("condition")
@@ -136,15 +133,21 @@ def create_letter_text(request: LetterRequest):
 
     letter_text = helper_functions.replace_placeholders(letter_text, data)
 
-    # ---------------------------------
-    # Generate PDF
-    # ---------------------------------
-    pdf_bytes = helper_functions.text_to_pdf_bytes(letter_text)
+    # export
+    file_bytes = helper_functions.export_letter(letter_text, filetype=file_type)
+
+    if file_type == "docx":
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        file_name = "brev.docx"
+
+    else:
+        media_type = "application/pdf"
+        file_name = "brev.pdf"
 
     return Response(
-        content=pdf_bytes,
-        media_type="application/pdf",
+        content=file_bytes,
+        media_type=media_type,
         headers={
-            "Content-Disposition": "inline; filename=brev.pdf"
+            "Content-Disposition": f'inline; filename="{file_name}"'
         }
     )

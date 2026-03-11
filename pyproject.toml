@@ -33,6 +33,7 @@ dependencies = [
     "pandas",
     "beautifulsoup4",
     "reportlab",
+    "python-docx",
 ]
 
 [project.optional-dependencies]
