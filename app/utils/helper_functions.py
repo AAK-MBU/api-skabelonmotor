@@ -8,17 +8,314 @@ This module contains functions responsible for:
 4. Replacing placeholders inside generated letter text.
 """
 
-import re
+import base64
 import io
+import re
+import tempfile
 
-from reportlab.lib.pagesizes import A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
-from reportlab.lib.styles import getSampleStyleSheet
-
-from docx import Document
-from docx.shared import RGBColor
+from io import BytesIO
 
 from bs4 import BeautifulSoup
+
+from docx import Document
+from docx.shared import RGBColor, Pt
+
+from docx2pdf import convert
+
+from openpyxl import load_workbook
+from openpyxl.cell.rich_text import CellRichText
+
+# Regex used to detect block headers such as:
+# "Blok 1", "Blok 3.1", "Blok 7.2a"
+BLOCK_HEADER_PATTERN = re.compile(r"^Blok\s+([0-9]+(?:\.\s*[0-9]+)?[a-zA-Z]?)")
+
+
+def extract_cell_formatting(cell):
+    """
+    Convert Excel rich text content into HTML-like formatted text.
+
+    Handles formatting such as bold, italic, underline, strike-through
+    and color while preserving the original text structure.
+
+    Args:
+        cell: openpyxl cell object.
+
+    Returns:
+        str: HTML-like formatted text.
+    """
+
+    if cell is None or cell.value is None:
+        return ""
+
+    value = cell.value
+
+    # ----------------------------------------
+    # Rich formatted text (Excel rich text)
+    # ----------------------------------------
+    if isinstance(value, CellRichText):
+
+        parts = []
+
+        for block in value:
+
+            text = block.text or ""
+            font = block.font
+
+            if not text:
+                continue
+
+            # Remove zero-width characters sometimes inserted by Excel
+            text = text.replace("\u200b", "")
+
+            # Replace Excel tab indentation
+            text = text.replace("\t", " ")
+
+            prefix = ""
+            suffix = ""
+
+            if font:
+
+                # Bold
+                if font.b:
+                    prefix += "<strong>"
+                    suffix = "</strong>" + suffix
+
+                # Italic
+                if font.i:
+                    prefix += "<em>"
+                    suffix = "</em>" + suffix
+
+                # Underline
+                if font.u in ["single", "double", "singleAccounting", "doubleAccounting", True]:
+                    prefix += "<u>"
+                    suffix = "</u>" + suffix
+
+                # Strikethrough
+                if font.strike:
+                    prefix += "<strike>"
+                    suffix = "</strike>" + suffix
+
+                # Text color
+                if font.color and font.color.rgb:
+                    rgb = font.color.rgb[-6:]
+
+                    # Skip default black text
+                    if rgb != "000000":
+                        prefix += f'<span style="color:#{rgb}">'
+                        suffix = "</span>" + suffix
+
+            parts.append(f"{prefix}{text}{suffix}")
+
+        return "".join(parts)
+
+    # ----------------------------------------
+    # Plain text cell (no formatting)
+    # ----------------------------------------
+    return str(value)
+
+
+def parse_workbook_afgoerelsesbrev(binary_excel: bytes) -> list[dict]:
+    """
+    Pure Excel parser.
+
+    Extracts blocks and their entries from the workbook without applying
+    any business logic, metadata, or custom functions.
+
+    Args:
+        binary_excel (bytes): Excel workbook content.
+
+    Returns:
+        list[dict]: Raw extracted block structures.
+    """
+
+    wb = load_workbook(BytesIO(binary_excel), rich_text=True)
+
+    parsed_blocks = []
+    current_block = None
+
+    # ----------------------------------------
+    # Parse workbook sheets
+    # ----------------------------------------
+    for sheet_name in wb.sheetnames:
+
+        if not sheet_name.startswith("Blok"):
+            continue
+
+        ws = wb[sheet_name]
+        rows = list(ws.iter_rows())
+
+        for i, row in enumerate(rows):
+
+            col_a_cell = row[0] if len(row) > 0 else None
+            col_b_cell = row[1] if len(row) > 1 else None
+
+            col_a = col_a_cell.value if col_a_cell else None
+            col_b = extract_cell_formatting(col_b_cell) if col_b_cell else None
+
+            # ----------------------------------------
+            # Detect block header
+            # ----------------------------------------
+            if isinstance(col_a, str):
+
+                match = BLOCK_HEADER_PATTERN.match(col_a)
+
+                if match:
+
+                    block_id = match.group(1).replace(" ", "").strip()
+
+                    # Mapping key from column C in next row
+                    next_row = rows[i + 1] if i + 1 < len(rows) else None
+                    next_col_c = None
+
+                    if next_row and len(next_row) > 2:
+                        next_col_c = next_row[2].value
+
+                    current_block = {
+                        "block_id": block_id,
+                        "title": col_a,
+                        "mapping": str(next_col_c).strip() if next_col_c else None,
+                        "entries": {}
+                    }
+
+                    parsed_blocks.append(current_block)
+
+                    continue
+
+            if not current_block:
+                continue
+
+            # ----------------------------------------
+            # Parse entries
+            # ----------------------------------------
+            if col_a and col_b:
+
+                entry_text = col_b.strip()
+
+                # Skip "Ingen tekst"
+                if normalize_key(entry_text) == "ingentekst":
+                    continue
+
+                key = str(col_a)
+
+                current_block["entries"][key] = entry_text
+
+    return parsed_blocks
+
+
+def insert_letter_into_template(template_b64: str, letter_text: str) -> bytes:
+    """
+    Insert rendered HTML letter text into a DOCX template.
+
+    The function locates the {{LETTER_TEXT}} placeholder in the template,
+    removes it, and inserts the formatted HTML content at the same location.
+    All supported formatting (bold, italic, underline, strike, color)
+    is preserved using the same recursive HTML parsing logic used by the
+    standalone DOCX renderer.
+    """
+
+    template_bytes = base64.b64decode(template_b64)
+
+    doc = Document(BytesIO(template_bytes))
+
+    # -------------------------------------------------
+    # Recursive HTML → DOCX run processor
+    # -------------------------------------------------
+    def process_node(node, paragraph, formatting=None):
+
+        if formatting is None:
+            formatting = {}
+
+        # ------------------------------
+        # TEXT NODE
+        # ------------------------------
+        if node.name is None:
+
+            content = str(node)
+
+            if not content.strip():
+                return
+
+            run = paragraph.add_run(content)
+
+            if formatting.get("bold"):
+                run.bold = True
+
+            if formatting.get("italic"):
+                run.italic = True
+
+            if formatting.get("underline"):
+                run.underline = True
+
+            if formatting.get("strike"):
+                run.font.strike = True
+
+            rgb = formatting.get("color")
+
+            if isinstance(rgb, str) and len(rgb) == 6:
+                run.font.color.rgb = RGBColor.from_string(rgb)
+
+        # ------------------------------
+        # ELEMENT NODE
+        # ------------------------------
+        else:
+
+            new_format = formatting.copy()
+
+            if node.name in ["strong", "b"]:
+                new_format["bold"] = True
+
+            if node.name in ["em", "i"]:
+                new_format["italic"] = True
+
+            if node.name == "u":
+                new_format["underline"] = True
+
+            if node.name == "strike":
+                new_format["strike"] = True
+
+            if node.name in ["span", "font"]:
+                match = re.search(r"#([0-9A-Fa-f]{6})", str(node))
+                if match:
+                    new_format["color"] = match.group(1)
+
+            for child in node.children:
+                process_node(child, paragraph, new_format)
+
+    # -------------------------------------------------
+    # Find placeholder and insert content
+    # -------------------------------------------------
+    for paragraph in doc.paragraphs:
+
+        if "{{LETTER_TEXT}}" in paragraph.text.upper():
+
+            parent = paragraph._element.getparent()
+            index = parent.index(paragraph._element)
+
+            # Remove placeholder paragraph
+            parent.remove(paragraph._element)
+
+            paragraphs = letter_text.split("\n\n")
+
+            for offset, p in enumerate(paragraphs):
+
+                new_paragraph = doc.add_paragraph()
+
+                soup = BeautifulSoup(p, "html.parser")
+
+                for child in soup.children:
+                    process_node(child, new_paragraph)
+
+                # Move paragraph to correct location
+                parent.insert(index + offset, new_paragraph._element)
+
+                new_paragraph.paragraph_format.space_after = Pt(12)  # or 6, 18 etc
+
+            break
+
+    buffer = BytesIO()
+    doc.save(buffer)
+
+    return buffer.getvalue()
 
 
 def normalize_html(text: str) -> str:
@@ -52,87 +349,6 @@ def normalize_html(text: str) -> str:
     text = text.replace("<em>", "<i>").replace("</em>", "</i>")
 
     return text
-
-
-def export_letter(text: str, filetype: str = "pdf") -> bytes:
-    """
-    Convert generated letter text into a file (PDF or DOCX).
-
-    The function first normalizes HTML formatting and then dispatches
-    the rendering to the appropriate engine depending on the requested
-    output type.
-
-    Args:
-        text (str): Generated letter text.
-        filetype (str): Output format ("pdf" or "docx").
-
-    Returns:
-        bytes: Binary file content ready for download.
-    """
-
-    # Normalize formatting before rendering
-    text = normalize_html(text)
-
-    # Dispatch rendering depending on requested file type
-    if filetype == "pdf":
-        return html_to_pdf_bytes(text)
-
-    if filetype == "docx":
-        return html_to_docx_bytes(text)
-
-    # Fail early if unsupported type is requested
-    raise ValueError("Unsupported file type")
-
-
-def html_to_pdf_bytes(text: str) -> bytes:
-    """
-    Render HTML-like text into a PDF document using ReportLab.
-
-    The text is split into paragraphs and rendered as ReportLab
-    Paragraph objects. Double line breaks define paragraph boundaries
-    while single line breaks are converted into HTML <br/> tags.
-
-    Args:
-        text (str): HTML-like formatted letter text.
-
-    Returns:
-        bytes: Generated PDF file content.
-    """
-
-    styles = getSampleStyleSheet()
-
-    buffer = io.BytesIO()
-
-    # Configure the PDF document layout
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        leftMargin=50,
-        rightMargin=50,
-        topMargin=50,
-        bottomMargin=50,
-    )
-
-    story = []
-
-    # Split text into logical paragraphs
-    paragraphs = text.split("\n\n")
-
-    for paragraph in paragraphs:
-
-        # ReportLab Paragraph supports limited HTML formatting
-        # Convert line breaks inside paragraphs into <br/>
-        story.append(
-            Paragraph(paragraph.replace("\n", "<br/>"), styles["Normal"])
-        )
-
-        # Add vertical spacing between paragraphs
-        story.append(Spacer(1, 12))
-
-    # Build the final PDF
-    doc.build(story)
-
-    return buffer.getvalue()
 
 
 def html_to_docx_bytes(text: str) -> bytes:
@@ -278,6 +494,25 @@ def html_to_docx_bytes(text: str) -> bytes:
     doc.save(buffer)
 
     return buffer.getvalue()
+
+
+def convert_docx_to_pdf(docx_bytes: bytes) -> bytes:
+    """
+    Helper function to convert a Word docx to pdf bytes
+    """
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+
+        docx_path = f"{tmpdir}/file.docx"
+        pdf_path = f"{tmpdir}/file.pdf"
+
+        with open(docx_path, "wb") as f:
+            f.write(docx_bytes)
+
+        convert(docx_path, pdf_path)
+
+        with open(pdf_path, "rb") as f:
+            return f.read()
 
 
 def normalize_key(value: str) -> str:

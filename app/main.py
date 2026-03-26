@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api import letter_handler
+from app.api import letter_creation, templates_handler
 
 
 class UTF8JSONResponse(JSONResponse):
@@ -29,7 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(letter_handler.router)
+app.include_router(letter_creation.router)
+app.include_router(templates_handler.router)
 
 
 @app.get("/")

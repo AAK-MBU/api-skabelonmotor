@@ -1,6 +1,4 @@
-"""API endpoints for Befordring functionalities."""
-
-from typing import Any
+"""API endpoints for letter creation functionalities."""
 
 from fastapi import APIRouter
 from fastapi.responses import Response
@@ -9,25 +7,23 @@ from pydantic import BaseModel
 
 from app.utils import helper_functions
 
-router = APIRouter(prefix="/skabelonmotor/api", tags=["Skabelonmotor"])
+router = APIRouter(prefix="/letter_creation", tags=["Letter creation"])
 
 
 class LetterRequest(BaseModel):
     """
-    Class docstring
+    Class for the letter request - by using a class we can properly assign values from the API requests
     """
 
-    data: dict[str, Any]
-
-    block_data: list[dict[str, Any]]
-
-    custom_key_overrides: dict[str, Any] | None = None
-
-    file_type: str = "pdf"
+    block_data: list
+    custom_key_overrides: dict | None = None
+    data: dict
+    file_type: str
+    template_b64: str | None = None
 
 
-@router.post("/create_text")
-def create_letter_text(request: LetterRequest):
+@router.post("/create_letter")
+def create_letter(request: LetterRequest):
     """
     Build the letter text from block_data and replace placeholders.
     """
@@ -38,10 +34,11 @@ def create_letter_text(request: LetterRequest):
 
     file_type = request.file_type.lower()
 
+    template_b64 = request.template_b64
+
     letter_parts = []
 
     for block in blocks:
-        block_id = block.get("block_id")
         mapping = block.get("mapping")
         condition = block.get("condition")
         entries = block.get("entries", {})
@@ -94,7 +91,6 @@ def create_letter_text(request: LetterRequest):
                 key = data.get(normalized_mapping)
 
             if key:
-
                 normalized_entries = {
                     helper_functions.normalize_key(k): v
                     for k, v in entries.items()
@@ -130,19 +126,36 @@ def create_letter_text(request: LetterRequest):
     # Combine blocks and replace placeholders
     # ---------------------------------
     letter_text = "\n\n".join(letter_parts)
-
     letter_text = helper_functions.replace_placeholders(letter_text, data)
 
-    # export
-    file_bytes = helper_functions.export_letter(letter_text, filetype=file_type)
+    text = helper_functions.normalize_html(text=letter_text)
 
-    if file_type == "docx":
-        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        file_name = "brev.docx"
+    # Here we check if the request included a docx template
+    # If it did, we simply insert the letter_text into that template - if not, we must create the docx from scratch
+    if template_b64:
+        docx_bytes = helper_functions.insert_letter_into_template(template_b64=template_b64, letter_text=text)
 
     else:
+        docx_bytes = helper_functions.html_to_docx_bytes(text=letter_text)
+
+    file_bytes = None
+    media_type = "None"
+    file_name = ""
+
+    if file_type == "docx":
+        file_bytes = docx_bytes
+
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+        file_name = "test_letter.docx"
+
+    elif file_type == "pdf":
+
+        file_bytes = helper_functions.convert_docx_to_pdf(docx_bytes)
+
         media_type = "application/pdf"
-        file_name = "brev.pdf"
+
+        file_name = "test_letter.pdf"
 
     return Response(
         content=file_bytes,
