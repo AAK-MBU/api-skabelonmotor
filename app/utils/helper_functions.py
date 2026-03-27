@@ -18,6 +18,9 @@ from io import BytesIO
 from bs4 import BeautifulSoup
 
 from docx import Document
+from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.opc.constants import RELATIONSHIP_TYPE as RT
 from docx.shared import RGBColor, Pt
 
 from docx2pdf import convert
@@ -28,6 +31,38 @@ from openpyxl.cell.rich_text import CellRichText
 # Regex used to detect block headers such as:
 # "Blok 1", "Blok 3.1", "Blok 7.2a"
 BLOCK_HEADER_PATTERN = re.compile(r"^Blok\s+([0-9]+(?:\.\s*[0-9]+)?[a-zA-Z]?)")
+
+
+def add_hyperlink(paragraph, url, text):
+
+    part = paragraph.part
+    r_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
+
+    hyperlink = OxmlElement("w:hyperlink")
+    hyperlink.set(qn("r:id"), r_id)
+
+    new_run = OxmlElement("w:r")
+
+    rPr = OxmlElement("w:rPr")
+
+    # Blue color
+    color = OxmlElement("w:color")
+    color.set(qn("w:val"), "0000FF")
+    rPr.append(color)
+
+    # Underline
+    underline = OxmlElement("w:u")
+    underline.set(qn("w:val"), "single")
+    rPr.append(underline)
+
+    new_run.append(rPr)
+
+    text_elem = OxmlElement("w:t")
+    text_elem.text = text
+    new_run.append(text_elem)
+
+    hyperlink.append(new_run)
+    paragraph._p.append(hyperlink)
 
 
 def extract_cell_formatting(cell):
@@ -128,6 +163,35 @@ def parse_workbook_afgoerelsesbrev(binary_excel: bytes) -> list[dict]:
         list[dict]: Raw extracted block structures.
     """
 
+    LINK_MAPPING = {
+        "Folkeskoleloven (retsinformation.dk)": "https://www.retsinformation.dk/eli/lta/2025/1100#P26",
+
+        "Bekendtgørelse om befordring af elever i folkeskolen (retsinformation.dk)": "https://www.retsinformation.dk/eli/lta/2014/688",
+
+        "Ungdomsskoleloven (retsinformation.dk)": "https://www.retsinformation.dk/eli/lta/2010/665",
+
+        "Behandling af personoplysninger i Børn og Unge (aarhus.dk)": "https://aarhus.dk/om-kommunen/databeskyttelse/behandling-af-personoplysninger-i-boern-og-unge"
+    }
+
+    def inject_links(entry_text: str) -> str:
+        for text, url in LINK_MAPPING.items():
+            if text in entry_text:
+                print(f"text: {text}")
+                print(f"url: {url}")
+                print(f"entry_text:\n{entry_text}")
+                print()
+
+                entry_text = entry_text.replace(
+                    text,
+                    f'<a href="{url}">{text}</a>'
+                )
+                print(f"after:\n{entry_text}")
+                print()
+                print()
+                print()
+
+        return entry_text
+
     wb = load_workbook(BytesIO(binary_excel), rich_text=True)
 
     parsed_blocks = []
@@ -197,6 +261,8 @@ def parse_workbook_afgoerelsesbrev(binary_excel: bytes) -> list[dict]:
 
                 key = str(col_a)
 
+                entry_text = inject_links(entry_text)
+
                 current_block["entries"][key] = entry_text
 
     return parsed_blocks
@@ -259,7 +325,27 @@ def insert_letter_into_template(template_b64: str, letter_text: str) -> bytes:
         # ------------------------------
         else:
 
+            # ----------------------------------------
+            # ELEMENT NODE
+            # ----------------------------------------
+            # When encountering an HTML element (<b>, <span>, etc.)
+            # we update the active formatting before processing children.
+            # Child nodes inherit this updated formatting.
             new_format = formatting.copy()
+
+            if node.name == "a":
+
+                url = node.get("href")
+
+                # Create empty hyperlink first
+                hyperlink_text = ""
+
+                for child in node.children:
+                    hyperlink_text += str(child)
+
+                add_hyperlink(paragraph, url, hyperlink_text)
+
+                return
 
             if node.name in ["strong", "b"]:
                 new_format["bold"] = True
@@ -278,6 +364,7 @@ def insert_letter_into_template(template_b64: str, letter_text: str) -> bytes:
                 if match:
                     new_format["color"] = match.group(1)
 
+            # Recursively process child nodes so formatting cascades
             for child in node.children:
                 process_node(child, paragraph, new_format)
 
@@ -450,7 +537,20 @@ def html_to_docx_bytes(text: str) -> bytes:
             # Child nodes inherit this updated formatting.
             new_format = formatting.copy()
 
-            # Update formatting depending on the tag type
+            if node.name == "a":
+
+                url = node.get("href")
+
+                # Create empty hyperlink first
+                hyperlink_text = ""
+
+                for child in node.children:
+                    hyperlink_text += str(child)
+
+                add_hyperlink(paragraph, url, hyperlink_text)
+
+                return
+
             if node.name in ["strong", "b"]:
                 new_format["bold"] = True
 
@@ -463,7 +563,6 @@ def html_to_docx_bytes(text: str) -> bytes:
             if node.name == "strike":
                 new_format["strike"] = True
 
-            # Extract color from span/font tags
             if node.name in ["span", "font"]:
                 match = re.search(r"#([0-9A-Fa-f]{6})", str(node))
                 if match:
